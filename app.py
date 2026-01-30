@@ -31,6 +31,15 @@ if 'file_last_modified' not in st.session_state:
     st.session_state.file_last_modified = 0
 if 'last_checked' not in st.session_state:
     st.session_state.last_checked = datetime.now()
+if 'form_submitted' not in st.session_state:
+    st.session_state.form_submitted = False
+if 'upload_form_data' not in st.session_state:
+    st.session_state.upload_form_data = {
+        'url': '',
+        'title': '',
+        'description': '',
+        'uploader': ''
+    }
 
 # Create data directory
 DATA_DIR = Path("data")
@@ -148,17 +157,12 @@ def load_slides():
                 st.session_state.last_refresh = datetime.now()
     except Exception as e:
         st.session_state.slides = []
-        st.error(f"Error loading slides: {e}")
 
 def save_slides():
     """Save slides to JSON file with timestamp update"""
     try:
-        # Update last_modified for all slides being saved
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
         # Mark that we're saving (for preventing self-triggered reloads)
-        if 'saving' not in st.session_state:
-            st.session_state.saving = True
+        st.session_state.saving = True
         
         with open(DB_FILE, 'w') as f:
             json.dump(st.session_state.slides, f, indent=2)
@@ -168,6 +172,7 @@ def save_slides():
         st.session_state.last_refresh = datetime.now()
         
         # Clear saving flag
+        time.sleep(0.1)  # Small delay to ensure file is written
         st.session_state.saving = False
         
         return True
@@ -206,7 +211,6 @@ def check_for_updates():
         
         return False
     except Exception as e:
-        st.error(f"Error checking for updates: {e}")
         return False
 
 def display_slide_in_dashboard(slide, index):
@@ -503,6 +507,14 @@ def handle_upload(upload_option, url, title, description, uploader):
     st.session_state.slides.append(new_slide)
     save_slides()
     
+    # Reset form data
+    st.session_state.upload_form_data = {
+        'url': '',
+        'title': '',
+        'description': '',
+        'uploader': ''
+    }
+    
     return True
 
 def main():
@@ -533,49 +545,64 @@ def main():
             key="upload_option"
         )
         
-        # Create upload form
-        with st.form(key="upload_form", clear_on_submit=True):
+        # Use session state for form persistence
+        if 'upload_form' not in st.session_state:
+            st.session_state.upload_form = {
+                'url': '',
+                'title': '',
+                'description': '',
+                'uploader': ''
+            }
+        
+        # Create form with unique key
+        form_key = f"upload_form_{len(st.session_state.slides)}"
+        with st.form(key=form_key, clear_on_submit=True):
             st.markdown("**URL**")
             if upload_option == "🌐 Google Drive/Slides":
                 url = st.text_input(
                     "Google Slides Link",
+                    value=st.session_state.upload_form['url'],
                     placeholder="https://docs.google.com/presentation/d/...",
                     help="Paste your Google Slides or Google Drive link",
                     label_visibility="collapsed",
-                    key="url_input"
+                    key=f"url_input_{form_key}"
                 )
             else:
                 url = st.text_input(
                     "Web Link",
+                    value=st.session_state.upload_form['url'],
                     placeholder="https://example.com/presentation",
                     help="Supported: Canva, SlideShare, SpeakerDeck, etc.",
                     label_visibility="collapsed",
-                    key="url_input_web"
+                    key=f"url_input_{form_key}"
                 )
             
             st.markdown("**Title**")
             title = st.text_input(
                 "Slide Title",
+                value=st.session_state.upload_form['title'],
                 placeholder="Enter presentation title",
                 label_visibility="collapsed",
-                key="title_input"
+                key=f"title_input_{form_key}"
             )
             
             st.markdown("**Description**")
             description = st.text_area(
                 "Description",
+                value=st.session_state.upload_form['description'],
                 placeholder="Brief description...",
                 height=80,
                 label_visibility="collapsed",
-                key="desc_input"
+                key=f"desc_input_{form_key}"
             )
             
             st.markdown("**Your Name**")
             uploader = st.text_input(
                 "Your Name",
+                value=st.session_state.upload_form['uploader'],
                 placeholder="Enter your name",
                 label_visibility="collapsed",
-                key="uploader_input"
+                key=f"uploader_input_{form_key}"
             )
             
             col1, col2 = st.columns([3, 1])
@@ -594,13 +621,43 @@ def main():
                     use_container_width=True
                 )
             
-            if submit_button:
+            # Handle form submission
+            if submit_button and not st.session_state.get('form_submitted', False):
+                # Set flag to prevent multiple submissions
+                st.session_state.form_submitted = True
+                
                 success = handle_upload(upload_option, url, title, description, uploader)
                 if success:
+                    # Store form data in session state
+                    st.session_state.upload_form = {
+                        'url': url,
+                        'title': title,
+                        'description': description,
+                        'uploader': uploader
+                    }
                     st.success(f"'{title if title else extract_title_from_url(url)}' uploaded successfully!")
                     st.balloons()
+                    # Reset form data for next use
+                    st.session_state.upload_form = {
+                        'url': '',
+                        'title': '',
+                        'description': '',
+                        'uploader': ''
+                    }
+                    # Clear submission flag after delay
                     time.sleep(0.5)
+                    st.session_state.form_submitted = False
                     st.rerun()
+            
+            if clear_button:
+                # Clear form data
+                st.session_state.upload_form = {
+                    'url': '',
+                    'title': '',
+                    'description': '',
+                    'uploader': ''
+                }
+                st.rerun()
         
         # Auto-refresh settings in sidebar
         st.markdown("---")
@@ -630,7 +687,7 @@ def main():
                 st.rerun()
         
         # Manual refresh button
-        if st.button("🔄 Check for Updates Now", use_container_width=True):
+        if st.button("🔄 Check for Updates Now", use_container_width=True, key="check_updates_btn"):
             if check_for_updates():
                 st.success("Slides updated!")
             else:
@@ -648,19 +705,19 @@ def main():
     .header-container {
        display: flex;
        align-items: center;
-       height: 200px;
+       height: 180px;
        justify-content: space-between;
-       padding: 18px 20px;
+       padding: 10px 20px;
        border-radius: 14px;
        background: linear-gradient(135deg, #f8fafc, #eef2ff);
        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
        transition: all 0.3s ease;
-       margin-bottom: 16px;
+       margin-bottom: 10px;
     }
 
     .header-container:hover {
       transform: translateY(-2px);
-      box-shadow: 0 14px 32px rgba(0, 0, 0, 0.12);
+      box-shadow: 0 14px 32px rgba(0, 0, 0, 0.15);
     }
 
     .header-title {
@@ -703,7 +760,7 @@ def main():
       />
 
       <div style="text-align: right;">
-        <div class="header-title">Slide MANAGER</div>
+        <div class="header-title">NPI MANAGER</div>
         <div class="header-subtitle">
             All team presentations in one place
         </div>
@@ -725,8 +782,8 @@ def main():
         display_delete_confirmation(slide, st.session_state.delete_slide_id)
         return
     
-    # Auto-refresh logic
-    if st.session_state.auto_refresh:
+    # Auto-refresh logic - ONLY if we're not in the middle of a form submission
+    if st.session_state.auto_refresh and not st.session_state.get('form_submitted', False):
         current_time = datetime.now()
         time_since_last_check = (current_time - st.session_state.last_checked).total_seconds()
         
@@ -852,7 +909,7 @@ def main():
         """, unsafe_allow_html=True)
         
         # Auto-refresh placeholder if no slides
-        if st.session_state.auto_refresh:
+        if st.session_state.auto_refresh and not st.session_state.get('form_submitted', False):
             time.sleep(st.session_state.refresh_interval)
             st.rerun()
         
@@ -862,8 +919,8 @@ def main():
     for i, slide in enumerate(st.session_state.slides):
         display_slide_in_dashboard(slide, i)
     
-    # Final auto-refresh trigger at the end
-    if st.session_state.auto_refresh:
+    # Final auto-refresh trigger at the end - ONLY if not in form submission
+    if st.session_state.auto_refresh and not st.session_state.get('form_submitted', False):
         current_time = datetime.now()
         time_since_last_check = (current_time - st.session_state.last_checked).total_seconds()
         
