@@ -1,6 +1,8 @@
 import streamlit as st
 import json
-from datetime import datetime
+import time
+import os
+from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import re
@@ -19,15 +21,16 @@ if 'edit_slide_id' not in st.session_state:
     st.session_state.edit_slide_id = None
 if 'delete_slide_id' not in st.session_state:
     st.session_state.delete_slide_id = None
-if 'form_submitted' not in st.session_state:
-    st.session_state.form_submitted = False
-if 'form_data' not in st.session_state:
-    st.session_state.form_data = {
-        'url': '',
-        'title': '',
-        'description': '',
-        'uploader': ''
-    }
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = False
+if 'refresh_interval' not in st.session_state:
+    st.session_state.refresh_interval = 10
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = datetime.now()
+if 'file_last_modified' not in st.session_state:
+    st.session_state.file_last_modified = 0
+if 'last_checked' not in st.session_state:
+    st.session_state.last_checked = datetime.now()
 
 # Create data directory
 DATA_DIR = Path("data")
@@ -140,20 +143,71 @@ def load_slides():
         if DB_FILE.exists():
             with open(DB_FILE, 'r') as f:
                 st.session_state.slides = json.load(f)
-    except:
+                # Update file modification time
+                st.session_state.file_last_modified = os.path.getmtime(DB_FILE)
+                st.session_state.last_refresh = datetime.now()
+    except Exception as e:
         st.session_state.slides = []
+        st.error(f"Error loading slides: {e}")
 
 def save_slides():
-    """Save slides to JSON file"""
+    """Save slides to JSON file with timestamp update"""
     try:
+        # Update last_modified for all slides being saved
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Mark that we're saving (for preventing self-triggered reloads)
+        if 'saving' not in st.session_state:
+            st.session_state.saving = True
+        
         with open(DB_FILE, 'w') as f:
             json.dump(st.session_state.slides, f, indent=2)
-    except:
-        pass
+        
+        # Update file modification time
+        st.session_state.file_last_modified = os.path.getmtime(DB_FILE)
+        st.session_state.last_refresh = datetime.now()
+        
+        # Clear saving flag
+        st.session_state.saving = False
+        
+        return True
+    except Exception as e:
+        st.error(f"Error saving slides: {e}")
+        return False
 
 def get_embed_url(presentation_id):
     """Generate embed URL for Google Slides"""
     return f"https://docs.google.com/presentation/d/{presentation_id}/embed"
+
+def check_for_updates():
+    """Check if the slides file has been modified by another user/instance"""
+    try:
+        if DB_FILE.exists():
+            current_mod_time = os.path.getmtime(DB_FILE)
+            
+            # If file was modified by another instance (not by us)
+            if (current_mod_time > st.session_state.file_last_modified and 
+                not st.session_state.get('saving', False)):
+                
+                # Load the updated slides
+                with open(DB_FILE, 'r') as f:
+                    updated_slides = json.load(f)
+                
+                # Only update if slides are different
+                if updated_slides != st.session_state.slides:
+                    st.session_state.slides = updated_slides
+                    st.session_state.file_last_modified = current_mod_time
+                    st.session_state.last_refresh = datetime.now()
+                    st.session_state.last_checked = datetime.now()
+                    return True
+                
+                st.session_state.file_last_modified = current_mod_time
+                st.session_state.last_checked = datetime.now()
+        
+        return False
+    except Exception as e:
+        st.error(f"Error checking for updates: {e}")
+        return False
 
 def display_slide_in_dashboard(slide, index):
     """Display a slide directly in the dashboard"""
@@ -178,6 +232,10 @@ def display_slide_in_dashboard(slide, index):
                         </span>
                         <span>•</span>
                         <span>{slide['date']}</span>
+                        <span>•</span>
+                        <span title="Last modified" style="color: #888;">
+                            📝 {slide.get('last_modified', slide['date'])}
+                        </span>
                     </div>
                 </div>
                 <div style="
@@ -319,19 +377,20 @@ def display_slide_in_dashboard(slide, index):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button(f"✏️ Edit", key=f"edit_{index}", use_container_width=True):
+            if st.button(f"✏️ Edit", key=f"edit_{index}_{slide['id']}", use_container_width=True):
                 st.session_state.edit_slide_id = index
                 st.rerun()
         
         with col2:
-            if st.button(f"🔄 Update", key=f"update_{index}", use_container_width=True):
-                st.session_state.slides[index]['last_modified'] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if st.button(f"🔄 Update", key=f"update_{index}_{slide['id']}", use_container_width=True):
+                st.session_state.slides[index]['last_modified'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 save_slides()
                 st.success("Slide updated!")
+                time.sleep(0.5)
                 st.rerun()
         
         with col3:
-            if st.button(f"🗑️ Delete", key=f"delete_{index}", type="secondary", use_container_width=True):
+            if st.button(f"🗑️ Delete", key=f"delete_{index}_{slide['id']}", type="secondary", use_container_width=True):
                 st.session_state.delete_slide_id = index
                 st.rerun()
         
@@ -347,7 +406,7 @@ def display_edit_form(slide, index):
             st.session_state.edit_slide_id = None
             st.rerun()
     
-    with st.form(key=f"edit_form_{index}"):
+    with st.form(key=f"edit_form_{index}_{slide['id']}"):
         new_title = st.text_input("Title", value=slide['title'])
         new_description = st.text_area("Description", value=slide.get('description', ''), height=100)
         
@@ -357,9 +416,10 @@ def display_edit_form(slide, index):
             if st.form_submit_button("💾 Save Changes", use_container_width=True):
                 st.session_state.slides[index]['title'] = new_title
                 st.session_state.slides[index]['description'] = new_description
-                st.session_state.slides[index]['last_modified'] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                st.session_state.slides[index]['last_modified'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 save_slides()
                 st.success("Slide updated successfully!")
+                time.sleep(0.5)
                 st.session_state.edit_slide_id = None
                 st.rerun()
         
@@ -404,6 +464,7 @@ def display_delete_confirmation(slide, index):
             st.session_state.slides.pop(index)
             save_slides()
             st.success(f"'{slide['title']}' deleted successfully!")
+            time.sleep(0.5)
             st.session_state.delete_slide_id = None
             st.rerun()
     
@@ -436,19 +497,11 @@ def handle_upload(upload_option, url, title, description, uploader):
         'uploader': uploader or "Anonymous",
         'date': datetime.now().strftime("%Y-%m-%d %H:%M"),
         'description': description,
-        'last_modified': datetime.now().strftime("%Y-%m-%d %H:%M")
+        'last_modified': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
     st.session_state.slides.append(new_slide)
     save_slides()
-    
-    # Reset form data
-    st.session_state.form_data = {
-        'url': '',
-        'title': '',
-        'description': '',
-        'uploader': ''
-    }
     
     return True
 
@@ -480,64 +533,49 @@ def main():
             key="upload_option"
         )
         
-        # Use session state for form persistence
-        if 'upload_form' not in st.session_state:
-            st.session_state.upload_form = {
-                'url': '',
-                'title': '',
-                'description': '',
-                'uploader': ''
-            }
-        
-        # Create form with unique key
-        form_key = f"upload_form_{len(st.session_state.slides)}"
-        with st.form(key=form_key, clear_on_submit=True):
+        # Create upload form
+        with st.form(key="upload_form", clear_on_submit=True):
             st.markdown("**URL**")
             if upload_option == "🌐 Google Drive/Slides":
                 url = st.text_input(
                     "Google Slides Link",
-                    value=st.session_state.upload_form['url'],
                     placeholder="https://docs.google.com/presentation/d/...",
                     help="Paste your Google Slides or Google Drive link",
                     label_visibility="collapsed",
-                    key=f"url_input_{form_key}"
+                    key="url_input"
                 )
             else:
                 url = st.text_input(
                     "Web Link",
-                    value=st.session_state.upload_form['url'],
                     placeholder="https://example.com/presentation",
                     help="Supported: Canva, SlideShare, SpeakerDeck, etc.",
                     label_visibility="collapsed",
-                    key=f"url_input_{form_key}"
+                    key="url_input_web"
                 )
             
             st.markdown("**Title**")
             title = st.text_input(
                 "Slide Title",
-                value=st.session_state.upload_form['title'],
                 placeholder="Enter presentation title",
                 label_visibility="collapsed",
-                key=f"title_input_{form_key}"
+                key="title_input"
             )
             
             st.markdown("**Description**")
             description = st.text_area(
                 "Description",
-                value=st.session_state.upload_form['description'],
                 placeholder="Brief description...",
                 height=80,
                 label_visibility="collapsed",
-                key=f"desc_input_{form_key}"
+                key="desc_input"
             )
             
             st.markdown("**Your Name**")
             uploader = st.text_input(
                 "Your Name",
-                value=st.session_state.upload_form['uploader'],
                 placeholder="Enter your name",
                 label_visibility="collapsed",
-                key=f"uploader_input_{form_key}"
+                key="uploader_input"
             )
             
             col1, col2 = st.columns([3, 1])
@@ -556,71 +594,124 @@ def main():
                     use_container_width=True
                 )
             
-            # Handle form submission
             if submit_button:
                 success = handle_upload(upload_option, url, title, description, uploader)
                 if success:
-                    # Store form data in session state
-                    st.session_state.upload_form = {
-                        'url': url,
-                        'title': title,
-                        'description': description,
-                        'uploader': uploader
-                    }
                     st.success(f"'{title if title else extract_title_from_url(url)}' uploaded successfully!")
                     st.balloons()
-                    # Reset form data for next use
-                    st.session_state.upload_form = {
-                        'url': '',
-                        'title': '',
-                        'description': '',
-                        'uploader': ''
-                    }
-                    # Use experimental_rerun instead of rerun for better control
+                    time.sleep(0.5)
                     st.rerun()
+        
+        # Auto-refresh settings in sidebar
+        st.markdown("---")
+        st.markdown("### 🔄 Refresh Settings")
+        
+        # Auto-refresh toggle
+        auto_refresh = st.checkbox(
+            "Enable auto-refresh", 
+            value=st.session_state.auto_refresh,
+            help="Automatically check for updates from other users"
+        )
+        
+        if auto_refresh != st.session_state.auto_refresh:
+            st.session_state.auto_refresh = auto_refresh
+            st.rerun()
+        
+        if st.session_state.auto_refresh:
+            refresh_interval = st.select_slider(
+                "Check every",
+                options=[5, 10, 15, 30, 60],
+                value=st.session_state.refresh_interval,
+                format_func=lambda x: f"{x} seconds" if x < 60 else "1 minute"
+            )
             
-            if clear_button:
-                # Clear form data
-                st.session_state.upload_form = {
-                    'url': '',
-                    'title': '',
-                    'description': '',
-                    'uploader': ''
-                }
+            if refresh_interval != st.session_state.refresh_interval:
+                st.session_state.refresh_interval = refresh_interval
                 st.rerun()
+        
+        # Manual refresh button
+        if st.button("🔄 Check for Updates Now", use_container_width=True):
+            if check_for_updates():
+                st.success("Slides updated!")
+            else:
+                st.info("No new updates found.")
+            time.sleep(1)
+            st.rerun()
+        
+        # Last checked time
+        if st.session_state.get('last_checked'):
+            st.caption(f"Last checked: {st.session_state.last_checked.strftime('%H:%M:%S')}")
     
     # Main content area with PAdGET branding
     st.markdown("""
-    <div style="
-        display: flex;
+    <style>
+    .header-container {
+       display: flex;
+       align-items: center;
+       height: 200px;
+       justify-content: space-between;
+       padding: 18px 20px;
+       border-radius: 14px;
+       background: linear-gradient(135deg, #f8fafc, #eef2ff);
+       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+       transition: all 0.3s ease;
+       margin-bottom: 16px;
+    }
+
+    .header-container:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 14px 32px rgba(0, 0, 0, 0.12);
+    }
+
+    .header-title {
+      font-size: 3.7rem;
+      font-weight: 700;
+      color: #1a73e8;
+      margin: 0;
+      letter-spacing: 2px;
+      shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    .header-subtitle {
+       font-size: 1.0rem;
+       color: #475569;
+    }
+
+    .logo-img {
+       height: 100px;
+       padding: 10px;
+       border-radius: 12px;
+    }
+    
+    .refresh-status {
+        padding: 5px 10px;
+        background: #f0f9ff;
+        border-radius: 12px;
+        font-size: 0.85em;
+        color: #0369a1;
+        display: inline-flex;
         align-items: center;
-        gap: 15px;
-        margin-bottom: 25px;
-        padding-bottom: 15px;
-        border-bottom: 2px solid #1a73e8;
-    ">
-        <div style="
-            background: #1a73e8;
-            color: white;
-            width: 120px;
-            height: 50px;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.5rem;
-            font-weight: bold;
-        ">
-            PAdGET 
+        gap: 5px;
+    }
+    </style>
+
+    <div class="header-container">
+      <img
+        src="https://www.sentinel-technologies.net/assets/customer_logos/padget.jpg"
+        class="logo-img"
+        alt="PAdGET Logo"
+      />
+
+      <div style="text-align: right;">
+        <div class="header-title">Slide MANAGER</div>
+        <div class="header-subtitle">
+            All team presentations in one place
         </div>
-        <div>
-            <h1 style="margin: 0; color: #2c3e50; font-size: 3.0rem;">Slide Manager</h1>
-            <p style="margin: 2px 0 0 0; color: #666; font-size: 1rem;">
-                All team presentations in one place
-            </p>
-        </div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
+
+    st.divider()
     
     # Show edit form if editing
     if st.session_state.edit_slide_id is not None:
@@ -634,11 +725,47 @@ def main():
         display_delete_confirmation(slide, st.session_state.delete_slide_id)
         return
     
-    # Dashboard stats
+    # Auto-refresh logic
+    if st.session_state.auto_refresh:
+        current_time = datetime.now()
+        time_since_last_check = (current_time - st.session_state.last_checked).total_seconds()
+        
+        if time_since_last_check >= st.session_state.refresh_interval:
+            if check_for_updates():
+                # Show a subtle notification that updates were loaded
+                update_container = st.empty()
+                with update_container:
+                    st.info(f"🔄 Auto-refresh: Loaded updates at {current_time.strftime('%H:%M:%S')}")
+                    time.sleep(1.5)
+                update_container.empty()
+            else:
+                st.session_state.last_checked = current_time
+    
+    # Dashboard stats and refresh status
     total_slides = len(st.session_state.slides)
     google_slides = len([s for s in st.session_state.slides if s['type'] == 'google'])
     web_links = len([s for s in st.session_state.slides if s['type'] == 'link'])
     
+    # Refresh status header
+    col_header1, col_header2 = st.columns([3, 1])
+    
+    with col_header1:
+        st.markdown(f"### 📊 Team Presentations ({total_slides} total)")
+    
+    with col_header2:
+        refresh_status = ""
+        if st.session_state.auto_refresh:
+            refresh_status = f"🔄 Auto-refresh: Every {st.session_state.refresh_interval}s"
+        else:
+            refresh_status = "⏸️ Auto-refresh: Off"
+        
+        st.markdown(f"""
+        <div style="text-align: right; margin-bottom: 10px;">
+            <span class="refresh-status">{refresh_status}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Stats cards
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -687,9 +814,21 @@ def main():
         """, unsafe_allow_html=True)
     
     with col4:
-        if st.button("🔄 Refresh Dashboard", use_container_width=True):
-            load_slides()
+        if st.button("🔄 Force Refresh", use_container_width=True, key="force_refresh_main"):
+            if check_for_updates():
+                st.success("Slides refreshed!")
+            else:
+                st.info("No updates found.")
+            time.sleep(1)
             st.rerun()
+    
+    # Last updated info
+    if DB_FILE.exists():
+        try:
+            mod_time = datetime.fromtimestamp(os.path.getmtime(DB_FILE))
+            st.caption(f"📝 Last database update: {mod_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        except:
+            pass
     
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -711,40 +850,32 @@ def main():
             </p>
         </div>
         """, unsafe_allow_html=True)
+        
+        # Auto-refresh placeholder if no slides
+        if st.session_state.auto_refresh:
+            time.sleep(st.session_state.refresh_interval)
+            st.rerun()
+        
         return
     
     # Display all slides
-    st.markdown(f"""
-    <div style="
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin: 30px 0 20px 0;
-        padding-bottom: 15px;
-        border-bottom: 1px solid #e0e0e0;
-    ">
-        <h3 style="margin: 0; color: #2c3e50; font-size: 1.3rem;">
-            Team Presentations
-        </h3>
-        <span style="
-            background: #e8f4fd;
-            color: #1a73e8;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 0.9em;
-            font-weight: 500;
-        ">
-            {total_slides} total
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Display all slides
     for i, slide in enumerate(st.session_state.slides):
-        original_index = next((idx for idx, s in enumerate(st.session_state.slides) 
-                             if s['id'] == slide['id']), i)
+        display_slide_in_dashboard(slide, i)
+    
+    # Final auto-refresh trigger at the end
+    if st.session_state.auto_refresh:
+        current_time = datetime.now()
+        time_since_last_check = (current_time - st.session_state.last_checked).total_seconds()
         
-        display_slide_in_dashboard(slide, original_index)
+        if time_since_last_check >= st.session_state.refresh_interval:
+            # Create a placeholder for the next refresh
+            refresh_placeholder = st.empty()
+            with refresh_placeholder:
+                st.caption(f"🔄 Next auto-refresh in {st.session_state.refresh_interval - time_since_last_check:.0f}s")
+            
+            # Small delay before checking again
+            time.sleep(0.1)
+            st.rerun()
 
 if __name__ == "__main__":
     main()
