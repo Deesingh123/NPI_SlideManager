@@ -9,7 +9,7 @@ import re
 
 # Page configuration
 st.set_page_config(
-    page_title="Slide Manager",
+    page_title="NPI Manager",
     page_icon="📊",
     layout="wide"
 )
@@ -760,7 +760,7 @@ def main():
       />
 
       <div style="text-align: right;">
-        <div class="header-title">NPI MANAGER</div>
+        <div class="header-title">PROJECT MANAGEMENT</div>
         <div class="header-subtitle">
             All team presentations in one place
         </div>
