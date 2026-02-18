@@ -760,7 +760,7 @@ def main():
       />
 
       <div style="text-align: right;">
-        <div class="header-title">PROJECT 4M READINESS REVIEW</div>
+        <div class="header-title">PROJECT 4M REVIEW</div>
         <div class="header-subtitle">
             All team presentations in one place
         </div>
